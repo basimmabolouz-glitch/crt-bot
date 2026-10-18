@@ -68,13 +68,13 @@ def calc_offset(key, sym, frames, ref_ok=True):
     cand = [(df.index[-1] + pd.Timedelta(minutes=m), float(df.Close.iloc[-1]))
             for m, df in frames.items() if m in (1, 3, 5, 15)]
     if not cand:
-        return old if old is not None else 0.0
+        return old
     t_close, last_c = max(cand)
     age_min = (now_ny() - t_close).total_seconds() / 60.0
     fresh = age_min <= 5.0 or os.environ.get("FORCE_OFFSET") == "1"       # FORCE للاختبار فقط
     q = spot_quote(sym, last_c) if fresh else None
     if q is None:
-        return old if old is not None else 0.0
+        return old
     raw = last_c - q
     new = raw if old is None else 0.7 * old + 0.3 * raw
     core.log(f"تصحيح {key}: آجل {last_c:.2f} - فوري {q:.2f} = {raw:.2f}$ (المعتمد {new:.2f}$)")
@@ -183,15 +183,20 @@ def compute(cfg):
                 ag1 = None; agc = {}
         if cfg.get("spotCorrection", True):
             og = calc_offset("xau", "XAU", conf)
-            OFFSETS["xau"] = og
-            conf = {m: shift(df, og) for m, df in conf.items()}
-            h1 = shift(h1, og)
+            if og is not None:
+                OFFSETS["xau"] = og
+                conf = {m: shift(df, og) for m, df in conf.items()}
+                h1 = shift(h1, og)
             if ag1 is not None:
                 os_ = calc_offset("xag", "XAG", agc)
-                OFFSETS["xag"] = os_
-                agc = {m: shift(df, os_) for m, df in agc.items()}
-                ag1 = shift(ag1, os_)
-            cfg["dataNote"] = f"الأسعار من Yahoo مصحّحة بفرق الذهب الفوري ({og:.1f}$) فتقارب شارتك بفرق صغير (قد يصل 3$): اعتمد على المسافات."
+                if os_ is not None:
+                    OFFSETS["xag"] = os_
+                    agc = {m: shift(df, os_) for m, df in agc.items()}
+                    ag1 = shift(ag1, os_)
+            if og is not None:
+                cfg["dataNote"] = f"الأسعار من Yahoo مصحّحة بفرق الذهب الفوري ({og:.1f}$) فتقارب شارتك بفرق صغير (قد يصل 3$): اعتمد على المسافات."
+            else:
+                cfg["dataNote"] = "الأسعار من عقود Yahoo الآجلة بلا تصحيح الآن (السوق مغلق)، وقد تزيد 15–28$ عن شارتك: اعتمد على المسافات."
     ctx = Context(h1, conf, P, ag1, agc)
     evs, _, _ = ctx.all_events()
     last_t = max(df.index[-1] for df in conf.values()) if conf else h1.index[-1]

@@ -1,0 +1,68 @@
+{
+  "ticker": "GC=F",
+  "spotSym": "XAU",
+  "spotCorrection": true,
+  "displayTz": "Asia/Riyadh",
+  "accountSize": 10000,
+  "riskPct": 0.5,
+  "ozPerLot": 100,
+  "maxAgeMin": 45,
+  "strategy": {
+    "chartTF": 5,
+    "mainTF": 15,
+    "pvL": 3,
+    "pvR": 2,
+    "depthATR": 1.0,
+    "clusterTol": 0.3,
+    "usePsych": true,
+    "maxActive": 30,
+    "trigMode": "both",
+    "onlyStrong": false,
+    "strictBreak": true,
+    "useBody": true,
+    "bodyMin": 0.6,
+    "farATR": 1.0,
+    "farMode": "limit",
+    "retestBars": 6,
+    "useRsiMax": true,
+    "rsiLen": 14,
+    "rsiMax": 70,
+    "bufPips": 10,
+    "pipSize": 0.1,
+    "minSLatr": 1.0,
+    "maxSLatr": 0,
+    "tp1R": 2.0,
+    "tp1Pct": 50,
+    "rr": 3.0,
+    "useBE": true,
+    "beAtR": 1.0,
+    "useSessions": true,
+    "sessions": {
+      "tokyo": {
+        "on": true,
+        "range": "0900-1100",
+        "tz": "Asia/Tokyo"
+      },
+      "london": {
+        "on": true,
+        "range": "0800-1000",
+        "tz": "Europe/London"
+      },
+      "newyork": {
+        "on": true,
+        "range": "0700-1100",
+        "tz": "America/New_York"
+      }
+    },
+    "maxTrades": 3,
+    "stopAfterWins": 3,
+    "useNews": true,
+    "newsDates": [],
+    "useDayMom": true,
+    "useNoJudas": false,
+    "asiaEndMin": 300,
+    "useADR": false,
+    "adrLen": 10,
+    "useNoFVG": true
+  }
+}
