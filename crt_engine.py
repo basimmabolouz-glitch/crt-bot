@@ -1,0 +1,451 @@
+# -*- coding: utf-8 -*-
+"""
+محرك CRT By Diaa (نفس منطق مؤشر CRT_By_Diaa.pine).
+
+المدخلات: شموع H1 (للسياق: فريمات CRT والبايس والمستويات) وشموع الدخول M5،
+كلاهما DataFrame فهرسه وقت فتح الشمعة بتوقيت نيويورك (naive) والأعمدة Open High Low Close Volume.
+المخرجات: أحداث (setup / signal / tp1 / closed) لكل فريم CRT.
+"""
+import numpy as np
+import pandas as pd
+
+DEFAULTS = dict(
+    crtTFs=["1H", "2H", "4H", "D"],
+    model="Any",                # Any | CISD | MSS + FVG | Model #1
+    minScore=7, aPlus=11,
+    useRSI=True, rsiLen=14, rsiOS=30, rsiOB=70, rsiPts=2,
+    useSMT=True, smtPts=1, smtBars=24,
+    requireKey=True, requireBias=False, useTrend=True,
+    wickMin=0.35, validCandles=1,
+    ltfSwing=2, fvgLookback=6, limitExpiry=20,
+    slBufAtr=0.10, minRR=1.0, tp1Frac=0.5, tp1Pct=50.0, be=True, maxCandles=4,
+    useKZ=True, kzAsia=False, kzLondon=True, kzNYAM=True, kzNYPM=False,
+    maxTradesDay=2, maxLossesDay=2,
+    anchorBodyAtr=0.2, rangeAtr=0.5, maxSweepDepth=1.0, minModelBars=2, maxModelBars=5,
+    insideTol=0.02, memory=12, keyConfAtr=0.35, mintick=0.01,
+    swingLen=3, trendEma=50,
+)
+
+HOURS_OK = {1, 5, 9, 13, 17, 21}
+SHIFT = pd.Timedelta(hours=7)     # 17:00 نيويورك = بداية اليوم (مثل الفوركس)
+SECS = {"1H": 3600, "2H": 7200, "4H": 14400, "D": 86400}
+
+
+# ───────────────────────── مؤشرات مساعدة ─────────────────────────
+def _agg(df, rule):
+    s = df.copy(); s.index = s.index + SHIFT
+    r = s.resample(rule).agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
+    r.index = r.index - SHIFT
+    return r
+
+
+def _weekly(df):
+    s = df.copy(); s.index = s.index + SHIFT
+    g = s.groupby(s.index.to_period("W-SUN"))
+    r = g.agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+    r.index = [p.start_time - SHIFT for p in r.index]
+    return r
+
+
+def _rma(x, n):
+    out = np.full(len(x), np.nan); a = 1.0 / n
+    for i in range(len(x)):
+        out[i] = x[i] if i == 0 else a * x[i] + (1 - a) * out[i - 1]
+    return out
+
+
+def _atr(df):
+    h, l, c = df.High.values, df.Low.values, df.Close.values
+    pc = np.r_[np.nan, c[:-1]]
+    tr = np.where(np.isnan(pc), h - l, np.maximum(h - l, np.maximum(abs(h - pc), abs(l - pc))))
+    return _rma(tr, 14)
+
+
+def _pivots(df, ln):
+    h, l = df.High.values, df.Low.values; n = len(df)
+    ph = np.full(n, np.nan); pl = np.full(n, np.nan); lph = lpl = np.nan
+    for i in range(n):
+        j = i - ln
+        if j - ln >= 0:
+            if h[j] > h[j - ln:j].max() and h[j] > h[j + 1:i + 1].max(): lph = h[j]
+            if l[j] < l[j - ln:j].min() and l[j] < l[j + 1:i + 1].min(): lpl = l[j]
+        ph[i] = lph; pl[i] = lpl
+    return ph, pl
+
+
+def _daily_vp_bias(df, mintick, bins=32, vapct=0.7):
+    o, h, l, c, v = df.Open.values, df.High.values, df.Low.values, df.Close.values, df.Volume.values
+    day = (df.index.year * 10000 + df.index.month * 100 + df.index.day).values
+    dh, dl, dv = [], [], []
+    prev_day = None; pvah = pval = pdh = pdl = np.nan; openmode = 0; locked = 0; flag = False
+    out = np.zeros(len(df), int)
+    for i in range(len(df)):
+        if prev_day is None or day[i] != prev_day:
+            if dh:
+                DH, DL = max(dh), min(dl); pdh, pdl = DH, DL
+                if DH > DL:
+                    bs = (DH - DL) / bins; prof = np.zeros(bins); tv = 0.0
+                    for ch, cl, cv in zip(dh, dl, dv):
+                        tv += cv; cr = max(ch - cl, mintick)
+                        for b in range(bins):
+                            bl = DL + bs * b; bh = bl + bs
+                            prof[b] += cv * max(0.0, min(ch, bh) - max(cl, bl)) / cr
+                    poc = int(prof.argmax()); lo = hi = poc; vv = prof[poc]; tgt = tv * vapct
+                    while vv < tgt and (lo > 0 or hi < bins - 1):
+                        lv = prof[lo - 1] if lo > 0 else -1.0
+                        rv = prof[hi + 1] if hi < bins - 1 else -1.0
+                        if rv >= lv and hi < bins - 1: hi += 1; vv += rv
+                        elif lo > 0: lo -= 1; vv += lv
+                        else: hi += 1; vv += rv
+                    pval = DL + bs * lo; pvah = DL + bs * (hi + 1)
+            dh, dl, dv = [], [], []
+            openmode = (1 if o[i] > pvah else (-1 if o[i] < pval else 0)) if not np.isnan(pvah) else 0
+            locked = 0; flag = False; prev_day = day[i]
+        dh.append(h[i]); dl.append(l[i]); dv.append(v[i] if v[i] > 0 else 1.0)
+        if not flag and not np.isnan(pvah):
+            if openmode == 0:
+                if h[i] > pvah and l[i] < pval: locked = 1 if c[i] >= o[i] else -1; flag = True
+                elif h[i] > pvah: locked = 1; flag = True
+                elif l[i] < pval: locked = -1; flag = True
+            elif openmode == 1:
+                if not np.isnan(pdh) and l[i] <= pvah and h[i] > pdh: locked = 1 if c[i] >= o[i] else -1; flag = True
+                elif l[i] <= pvah: locked = -1; flag = True
+                elif not np.isnan(pdh) and h[i] > pdh: locked = 1; flag = True
+            else:
+                if not np.isnan(pdl) and h[i] >= pval and l[i] < pdl: locked = 1 if c[i] >= o[i] else -1; flag = True
+                elif h[i] >= pval: locked = 1; flag = True
+                elif not np.isnan(pdl) and l[i] < pdl: locked = -1; flag = True
+        out[i] = locked
+    return out
+
+
+def _small_bias(df, sw=3, fast=20, slow=50, acc=2, buf=0.2, rev=3):
+    h, l, c = df.High.values, df.Low.values, df.Close.values; n = len(df)
+    a = _atr(df)
+    ef = pd.Series(c).ewm(span=fast, adjust=False).mean().values
+    es = pd.Series(c).ewm(span=slow, adjust=False).mean().values
+    lph = pph = lpl = ppl = np.nan; locked = 0; out = np.zeros(n, int)
+    for i in range(n):
+        j = i - sw
+        if j - sw >= 0:
+            if h[j] > h[j - sw:j].max() and h[j] > h[j + 1:i + 1].max(): pph, lph = lph, h[j]
+            if l[j] < l[j - sw:j].min() and l[j] < l[j + 1:i + 1].min(): ppl, lpl = lpl, l[j]
+        hs = not (np.isnan(lph) or np.isnan(pph) or np.isnan(lpl) or np.isnan(ppl))
+        sb = hs and lph > pph and lpl >= ppl
+        sr = hs and lpl < ppl and lph <= pph
+        eb = i > 0 and ef[i] > es[i] and ef[i] > ef[i - 1]
+        er = i > 0 and ef[i] < es[i] and ef[i] < ef[i - 1]
+        up = dn = False
+        if not np.isnan(lph) and i >= acc - 1:
+            lvl = lph + a[i] * buf; up = all(c[i - k] > lvl for k in range(acc))
+        if not np.isnan(lpl) and i >= acc - 1:
+            lvl = lpl - a[i] * buf; dn = all(c[i - k] < lvl for k in range(acc))
+        rbs = (not np.isnan(lpl)) and l[i] < lpl and c[i] > lpl
+        rbu = (not np.isnan(lph)) and h[i] > lph and c[i] < lph
+        bs = (2 if sb else 0) + (1 if eb else 0) + (2 if up else 0) + (1 if rbs else 0)
+        brs = (2 if sr else 0) + (1 if er else 0) + (2 if dn else 0) + (1 if rbu else 0)
+        if bs - brs >= rev: raw = 1
+        elif brs - bs >= rev: raw = -1
+        else: raw = 2 if (hs and ((sb and er) or (sr and eb) or rbs or rbu or up or dn)) else 0
+        if locked in (0, 2): locked = raw
+        elif locked == 1:
+            if raw == -1 and dn: locked = -1
+            elif raw == 2: locked = 2
+        elif locked == -1:
+            if raw == 1 and up: locked = 1
+            elif raw == 2: locked = 2
+        out[i] = locked
+    return out
+
+
+def _rsi(df, n=14):
+    c = df.Close.values; d = np.diff(c, prepend=c[0])
+    up = np.where(d > 0, d, 0.0); dn = np.where(d < 0, -d, 0.0)
+    au = _rma(up, n); ad = _rma(dn, n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rs = au / np.where(ad == 0, np.nan, ad)
+    return 100 - 100 / (1 + rs)
+
+
+def _trend(df, ln):
+    c = df.Close.values; e = pd.Series(c).ewm(span=ln, adjust=False).mean().values
+    out = np.zeros(len(c), int)
+    for i in range(1, len(c)):
+        out[i] = 1 if (c[i] > e[i] and e[i] > e[i - 1]) else (-1 if (c[i] < e[i] and e[i] < e[i - 1]) else 0)
+    return out
+
+
+def _poi_any(df, t):
+    o, h, l, c = df.Open.values, df.High.values, df.Low.values, df.Close.values
+    hi_t, lo_t = h[t], l[t]
+    for i in range(1, 121):
+        if t - i - 2 < 0: break
+        k = t - i
+        bull_i, bear_i = c[k] > o[k], c[k] < o[k]
+        bull_p, bear_p = c[k - 1] > o[k - 1], c[k - 1] < o[k - 1]
+        if (bear_p and bull_i) or (bull_p and bear_i):
+            lo = min(min(o[k], c[k]), min(o[k - 1], c[k - 1])); hi = max(max(o[k], c[k]), max(o[k - 1], c[k - 1]))
+            if hi_t >= lo and lo_t <= hi: return True
+            blo, bhi = min(o[k - 1], c[k - 1]), max(o[k - 1], c[k - 1])
+            if hi_t >= blo and lo_t <= bhi: return True
+        if l[k] > h[k - 2] and hi_t >= h[k - 2] and lo_t <= l[k]: return True
+        if h[k] < l[k - 2] and hi_t >= h[k] and lo_t <= l[k - 2]: return True
+    return False
+
+
+# ───────────────────────── السياق ─────────────────────────
+class Context:
+    def __init__(self, h1, m5, P, ag1=None, ag5=None):
+        self.P = P; self.h1 = h1; self.m5 = m5
+        self.agL = self.agH = None
+        if ag5 is not None and len(ag5) > 50:
+            self.agL = ag5.Low.reindex(m5.index).values
+            self.agH = ag5.High.reindex(m5.index).values
+        self.ag = None
+        if ag1 is not None and len(ag1) > 50:
+            self.ag = {"1H": ag1, "2H": _agg(ag1, "2h"), "4H": _agg(ag1, "4h"), "D": _agg(ag1, "1D")}
+        self.tf = {"1H": h1, "2H": _agg(h1, "2h"), "4H": _agg(h1, "4h"), "D": _agg(h1, "1D")}
+        self.W = _weekly(h1)
+        self.Wend = self.W.index + pd.Timedelta(days=7)
+        self.vp = _daily_vp_bias(h1, P["mintick"])
+        self.vp_end = h1.index + pd.Timedelta(hours=1)
+        self.sb5 = _small_bias(m5)
+        self.c = {}
+        for name, df in self.tf.items():
+            a14 = _atr(df); ph, pl = _pivots(df, P["swingLen"])
+            self.c[name] = dict(df=df, secs=SECS[name], atr=a14, ph=ph, pl=pl, det=self._detect(df, a14), rsi=_rsi(df, P["rsiLen"]),
+                                end=df.index + pd.Timedelta(seconds=SECS[name]))
+        self.trend4 = _trend(self.tf["4H"], P["trendEma"])
+
+    def _detect(self, df, a14):
+        P = self.P
+        o, h, l, c = df.Open.values, df.High.values, df.Low.values, df.Close.values
+        hrs = df.index.hour.values; n = len(df); out = [None] * n; tol = P["insideTol"]; mt = P["mintick"]
+        for t in range(6, n):
+            for m in range(P["minModelBars"], P["maxModelBars"] + 1):
+                a = t - (m - 1)
+                ch, cl = h[a], l[a]
+                body = abs(c[a] - o[a]); rng = ch - cl
+                if not (body >= P["anchorBodyAtr"] * a14[a] and rng >= P["rangeAtr"] * a14[a] and hrs[a] in HOURS_OK): continue
+                if any(not (h[t - i] <= ch + tol and l[t - i] >= cl - tol) for i in range(1, m - 1)): continue
+                bull = l[t] < cl - tol and c[t] > cl and (cl - l[t]) <= rng * P["maxSweepDepth"]
+                bear = h[t] > ch + tol and c[t] < ch and (h[t] - ch) <= rng * P["maxSweepDepth"]
+                if bull or bear:
+                    c2r = max(h[t] - l[t], mt); isb = bool(bull)
+                    wick = (min(o[t], c[t]) - l[t]) / c2r if isb else (h[t] - max(o[t], c[t])) / c2r
+                    out[t] = dict(bull=isb, H=ch, L=cl, ext=(l[t] if isb else h[t]), wick=wick,
+                                  anchor_hr=int(hrs[a]), sweep_time=df.index[t], t=t, a=a)
+                    break
+        return out
+
+    @staticmethod
+    def last_done(endidx, T):
+        return int(endidx.searchsorted(T, side="right")) - 1
+
+    def crt_mem(self, name, T, bull):
+        c = self.c[name]; i = self.last_done(c["end"], T)
+        if i < 0: return False
+        for j in range(max(0, i - self.P["memory"]), i + 1):
+            d = c["det"][j]
+            if d is not None and d["bull"] == bull: return True
+        return False
+
+    def smt(self, name, d, isb):
+        """SMT مع الفضة: الذهب كسر طرف C1 والفضة لم تكسر نفس الطرف في C2."""
+        if not self.ag: return False
+        sdf = self.ag[name]; df = self.c[name]["df"]
+        try:
+            t2 = df.index[d["t"]]; ta = df.index[d["a"]]
+            if t2 not in sdf.index or ta not in sdf.index: return False
+            return bool(sdf.loc[t2, "Low"] > sdf.loc[ta, "Low"]) if isb else bool(sdf.loc[t2, "High"] < sdf.loc[ta, "High"])
+        except Exception:
+            return False
+
+    def smt_entry(self, isb, k, l5, h5):
+        """SMT على فريم الدخول: الذهب كسر قاع (قمة) آخر نافذة، والفضة لم تكسر نظيره."""
+        if self.agL is None: return False
+        N = self.P["smtBars"]
+        if k - 2 * N + 1 < 0: return False
+        a, b, c = k - 2 * N + 1, k - N + 1, k + 1
+        try:
+            if isb:
+                sl, sp = np.nanmin(self.agL[b:c]), np.nanmin(self.agL[a:b])
+                return bool(l5[b:c].min() < l5[a:b].min() and sl >= sp)
+            sh, sp = np.nanmax(self.agH[b:c]), np.nanmax(self.agH[a:b])
+            return bool(h5[b:c].max() > h5[a:b].max() and sh <= sp)
+        except Exception:
+            return False
+
+    def key_hit(self, isb, ext, edge, T, tol):
+        lv = []
+        d = self.c["D"]; i = self.last_done(d["end"], T)
+        if i >= 0: lv.append(d["df"].Low.values[i] if isb else d["df"].High.values[i])
+        wi = self.last_done(self.Wend, T)
+        if wi >= 0: lv.append(self.W.Low.values[wi] if isb else self.W.High.values[wi])
+        for nm in ("1H", "2H", "4H", "D"):
+            c = self.c[nm]; k = self.last_done(c["end"], T)
+            if k >= 0:
+                v = c["pl"][k] if isb else c["ph"][k]
+                if not np.isnan(v): lv.append(v)
+        for v in lv:
+            if np.isnan(v): continue
+            if isb and ext - tol <= v <= edge + tol: return True
+            if (not isb) and edge - tol <= v <= ext + tol: return True
+        return False
+
+    # ───────────────────────── المحاكاة / الأحداث ─────────────────────────
+    def simulate(self, name):
+        P = self.P; m5 = self.m5; c = self.c[name]; df = c["df"]; secs = c["secs"]
+        o5, h5, l5, c5 = m5.Open.values, m5.High.values, m5.Low.values, m5.Close.values
+        t5 = m5.index; n = len(m5); atr5 = _atr(m5); LS = P["ltfSwing"]
+        mt = P["mintick"]; model = P["model"]
+        starts = {}
+        for t, d in enumerate(c["det"]):
+            if d is None or t + 1 >= len(df): continue
+            k = int(t5.searchsorted(df.index[t + 1], side="left"))
+            if k < n: starts.setdefault(k, []).append(d)
+        events = []; setup = None; pending = None; trade = None
+        lph = lpl = np.nan; bear_run = bull_run = np.nan
+        cur_day = None; trades_today = losses_today = 0
+
+        def ev(kind, k, tr=None, **kw):
+            events.append(dict(kind=kind, tf=name, bar_time=t5[k], k=k, trade=dict(tr) if tr else None, **kw))
+
+        for k in range(n):
+            T = t5[k]; day = (T.year, T.month, T.day)
+            if day != cur_day: cur_day = day; trades_today = losses_today = 0
+            j = k - LS
+            if j - LS >= 0:
+                if h5[j] > h5[j - LS:j].max() and h5[j] > h5[j + 1:k + 1].max(): lph = h5[j]
+                if l5[j] < l5[j - LS:j].min() and l5[j] < l5[j + 1:k + 1].min(): lpl = l5[j]
+            if k > 0:
+                if c5[k] < o5[k] and (np.isnan(bear_run) or c5[k - 1] > o5[k - 1]): bear_run = o5[k]
+                if c5[k] > o5[k] and (np.isnan(bull_run) or c5[k - 1] < o5[k - 1]): bull_run = o5[k]
+            # 1) إعداد جديد
+            for d in starts.get(k, []):
+                isb = d["bull"]; edge = d["L"] if isb else d["H"]
+                i1 = self.last_done(self.c["1H"]["end"], T)
+                if i1 < 0: continue
+                a1 = self.c["1H"]["atr"][i1]
+                kh = self.key_hit(isb, d["ext"], edge, T, a1 * P["keyConfAtr"])
+                vi = self.last_done(self.vp_end, T); dvp = self.vp[vi] if vi >= 0 else 0
+                want = 1 if isb else -1
+                sc = 1
+                sc += 3 if kh else 0
+                sc += 1 if dvp == want else 0
+                sc += 1 if self.sb5[k] == want else 0
+                sc += 1 if d["anchor_hr"] in HOURS_OK else 0
+                sc += 1 if d["wick"] >= P["wickMin"] else 0
+                htf = 0
+                if secs < 14400 and self.crt_mem("4H", T, isb): htf += 2
+                if secs < 7200 and self.crt_mem("2H", T, isb): htf += 1
+                sc += min(htf, 2)
+                sc += 1 if _poi_any(df, d["t"]) else 0
+                ti = self.last_done(self.c["4H"]["end"], T); tb = self.trend4[ti] if ti >= 0 else 0
+                sc += 1 if (P["useTrend"] and tb == want) else 0
+                rs = c["rsi"]; r2 = rs[d["t"]]; r1 = rs[d["t"] - 1]
+                rsi_ok = bool(P["useRSI"] and ((min(r2, r1) <= P["rsiOS"]) if isb else (max(r2, r1) >= P["rsiOB"])))
+                smt_ok = bool(P["useSMT"] and self.smt(name, d, isb))
+                sc += P["rsiPts"] if rsi_ok else 0
+                sc += P["smtPts"] if smt_ok else 0
+                bias_ok = dvp == want or self.sb5[k] == want
+                ok = sc >= P["minScore"] and (kh or not P["requireKey"]) and (bias_ok or not P["requireBias"])
+                if ok:
+                    grade = "A+" if sc >= P["aPlus"] else ("A" if sc >= P["aPlus"] - 2 else "B")
+                    setup = dict(isb=isb, H=d["H"], L=d["L"], ext=d["ext"], score=sc, grade=grade, key=kh, rsi=rsi_ok, smt=smt_ok,
+                                 start=d["sweep_time"] + pd.Timedelta(seconds=secs),
+                                 end=d["sweep_time"] + pd.Timedelta(seconds=secs * (1 + P["validCandles"])))
+                    ev("setup", k, setup=dict(setup))
+                else:
+                    setup = None
+                pending = None
+            # 2) انتهاء / إبطال
+            if setup is not None:
+                isb = setup["isb"]
+                mid = setup["L"] + (setup["H"] - setup["L"]) * (P["tp1Frac"] if isb else 1 - P["tp1Frac"])
+                if T > setup["end"] or (c5[k] < setup["ext"] if isb else c5[k] > setup["ext"]) or (h5[k] >= mid if isb else l5[k] <= mid):
+                    setup = None; pending = None
+            # 3) تأكيد الدخول
+            if setup is not None and trade is None and k > 0:
+                isb = setup["isb"]
+                if isb:
+                    cisd = (not np.isnan(bear_run)) and c5[k] > bear_run and c5[k - 1] <= bear_run
+                    m1 = c5[k - 1] < o5[k - 1] and c5[k] > h5[k - 1]
+                    mss = (not np.isnan(lph)) and c5[k] > lph and c5[k - 1] <= lph
+                else:
+                    cisd = (not np.isnan(bull_run)) and c5[k] < bull_run and c5[k - 1] >= bull_run
+                    m1 = c5[k - 1] > o5[k - 1] and c5[k] < l5[k - 1]
+                    mss = (not np.isnan(lpl)) and c5[k] < lpl and c5[k - 1] >= lpl
+                ftop = fbot = np.nan
+                for q in range(0, P["fvgLookback"]):
+                    if k - q - 2 < 0: break
+                    if isb and l5[k - q] > h5[k - q - 2]: ftop, fbot = l5[k - q], h5[k - q - 2]; break
+                    if (not isb) and h5[k - q] < l5[k - q - 2]: ftop, fbot = l5[k - q - 2], h5[k - q]; break
+                epx = np.nan; tag = ""
+                if model in ("Any", "CISD") and cisd: epx, tag = c5[k], "CISD"
+                elif model in ("Any", "Model #1") and m1: epx, tag = c5[k], "Model#1"
+                if model in ("Any", "MSS + FVG") and mss and not np.isnan(ftop) and np.isnan(epx):
+                    pending = dict(px=(ftop + fbot) / 2, bar=k)
+                if np.isnan(epx) and pending is not None:
+                    if k - pending["bar"] > P["limitExpiry"]: pending = None
+                    elif k > pending["bar"] and ((l5[k] <= pending["px"]) if isb else (h5[k] >= pending["px"])):
+                        epx, tag = pending["px"], "MSS+FVG"
+                if not np.isnan(epx):
+                    pending = None
+                    buf = atr5[k] * P["slBufAtr"]
+                    sl = setup["ext"] - buf if isb else setup["ext"] + buf
+                    risk = abs(epx - sl)
+                    tp1 = setup["L"] + (setup["H"] - setup["L"]) * (P["tp1Frac"] if isb else 1 - P["tp1Frac"])
+                    tp2 = setup["H"] if isb else setup["L"]
+                    rr1 = abs(tp1 - epx) / risk if risk > 0 else 0
+                    dir_ok = (sl < epx < tp1) if isb else (tp1 < epx < sl)
+                    hm = T.hour * 60 + T.minute
+                    kz = (not P["useKZ"]) or (P["kzAsia"] and hm >= 1200) or (P["kzLondon"] and 120 <= hm < 300) \
+                        or (P["kzNYAM"] and 420 <= hm < 600) or (P["kzNYPM"] and 780 <= hm < 960)
+                    day_ok = trades_today < P["maxTradesDay"] and losses_today < P["maxLossesDay"]
+                    if risk > mt and dir_ok and rr1 >= P["minRR"] and day_ok and kz:
+                        # SMT مع الفضة عند الدخول: مفضّل (يرفع الدرجة) وليس شرطاً
+                        smt_ltf = bool(P["useSMT"] and self.smt_entry(isb, k, l5, h5))
+                        tot = setup["score"] + (P["smtPts"] if smt_ltf else 0)
+                        grade_t = "A+" if tot >= P["aPlus"] else ("A" if tot >= P["aPlus"] - 2 else "B")
+                        trade = dict(smt_ltf=smt_ltf,isb=isb, dir=1 if isb else -1, entry=float(epx), sl=float(sl), sl0=float(sl), tp1=float(tp1),
+                                     tp2=float(tp2), risk=float(risk), tp1hit=False, bar=k, time=T,
+                                     end=T + pd.Timedelta(seconds=secs * P["maxCandles"]), grade=grade_t,
+                                     score=tot, rsi=setup["rsi"], smt=setup["smt"], tag=tag, rr1=float(rr1), rr2=float(abs(tp2 - epx) / risk),
+                                     tf=name, key=setup["key"], sig_time=T.isoformat())
+                        trades_today += 1; setup = None
+                        ev("signal", k, trade)
+            # 4) إدارة الصفقة
+            if trade is not None and k > trade["bar"]:
+                tr = trade; isb = tr["isb"]
+                r1 = abs(tr["tp1"] - tr["entry"]) / tr["risk"]; r2 = abs(tr["tp2"] - tr["entry"]) / tr["risk"]; pct = P["tp1Pct"] / 100.0
+                sl_hit = (l5[k] <= tr["sl"]) if isb else (h5[k] >= tr["sl"])
+                t1 = (h5[k] >= tr["tp1"]) if isb else (l5[k] <= tr["tp1"])
+                t2 = (h5[k] >= tr["tp2"]) if isb else (l5[k] <= tr["tp2"])
+                res = None; why = ""
+                if sl_hit:
+                    if tr["tp1hit"]: res, why = pct * r1 + (1 - pct) * (0.0 if P["be"] else -1.0), "TP1+BE" if P["be"] else "TP1+SL"
+                    else: res, why = -1.0, "SL"
+                else:
+                    if (not tr["tp1hit"]) and t1:
+                        tr["tp1hit"] = True
+                        if P["be"]: tr["sl"] = tr["entry"]
+                        ev("tp1", k, tr)
+                    if tr["tp1hit"] and t2: res, why = pct * r1 + (1 - pct) * r2, "TP2"
+                    elif T >= tr["end"]:
+                        un = ((c5[k] - tr["entry"]) if isb else (tr["entry"] - c5[k])) / tr["risk"]
+                        res = pct * r1 + (1 - pct) * un if tr["tp1hit"] else un; why = "TIME"
+                if res is not None:
+                    tr["R"] = float(res); tr["why"] = why
+                    if res < -0.001: losses_today += 1
+                    ev("closed", k, tr, result=why, R=float(res))
+                    trade = None
+        return events, trade, setup
+
+    def all_events(self):
+        evs = []; open_trades = {}; setups = {}
+        for nm in self.P["crtTFs"]:
+            e, tr, st = self.simulate(nm)
+            evs += e; open_trades[nm] = tr; setups[nm] = st
+        evs.sort(key=lambda x: (x["bar_time"], x["tf"]))
+        return evs, open_trades, setups

@@ -1,0 +1,37 @@
+{
+  "ticker": "GC=F",
+  "smtTicker": "SI=F",
+  "symbol": "XAUUSD (GC=F)",
+  "contractSize": 100,
+  "historyBarsM5": 5000,
+  "historyBarsH1": 4000,
+  "maxAgeMin": 45,
+  "notifySetups": false,
+  "accountSize": 10000,
+  "riskPct": 0.5,
+  "dataNote": "الأسعار من عقود الذهب الآجلة (Yahoo) وتختلف بضعة دولارات عن سعر وسيطك: اعتمد على المسافات.",
+  "strategy": {
+    "_note": "أي مفتاح هنا يغيّر الافتراضي (انظر DEFAULTS في crt_engine.py)",
+    "crtTFs": [
+      "1H",
+      "2H",
+      "4H",
+      "D"
+    ],
+    "model": "Any",
+    "minScore": 7,
+    "requireKey": true,
+    "useRSI": true,
+    "useSMT": true,
+    "useKZ": true,
+    "kzLondon": true,
+    "kzNYAM": true,
+    "kzNYPM": false,
+    "kzAsia": false,
+    "maxTradesDay": 2,
+    "maxLossesDay": 2,
+    "tp1Frac": 0.5,
+    "tp1Pct": 50,
+    "be": true
+  }
+}
