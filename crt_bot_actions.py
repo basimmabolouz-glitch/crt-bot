@@ -14,7 +14,7 @@ import pandas as pd
 import yfinance as yf
 
 import crt_bot as core
-from crt_engine import Context
+from crt_engine import Context, needed_conf, resample_min
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NY = "America/New_York"
@@ -43,20 +43,42 @@ def yf_frame(ticker, interval, period, minutes):
     raise RuntimeError(f"فشل جلب {ticker} {interval}: {last}")
 
 
+YF_IV = {1: ("1m", "7d"), 5: ("5m", "30d"), 15: ("15m", "30d")}      # 3m يُبنى من 1m (Yahoo لا يوفّر 3m)
+
+
+def conf_frames(ticker, mins, n_conf):
+    out = {}
+    for m in mins:
+        src = 1 if m == 3 else m
+        if src not in out and src not in {1, 5, 15}:
+            continue
+        if src not in out and (src in YF_IV):
+            iv, per = YF_IV[src]
+            out[src] = yf_frame(ticker, iv, per, src).tail(n_conf * (3 if m == 3 else 1))
+    if 3 in mins and 1 in out:
+        r = resample_min(out[1], 3)
+        out[3] = r[r.index + pd.Timedelta(minutes=3) <= now_ny()].tail(n_conf)
+    return {m: out[m] for m in mins if m in out}
+
+
 def compute(cfg):
     P = core.params(cfg)
-    m5 = yf_frame(cfg["ticker"], "5m", "30d", 5).tail(cfg.get("historyBarsM5", 5000))
+    need = sorted(m for m in needed_conf(P) if m in (1, 3, 5, 15))
+    n_conf = cfg.get("historyBarsConf", 5000)
+    conf = conf_frames(cfg["ticker"], need, n_conf)
     h1 = yf_frame(cfg["ticker"], "1h", "730d", 60).tail(cfg.get("historyBarsH1", 4000))
-    ag1 = ag5 = None
+    ag1 = None; agc = {}
     if P.get("useSMT") and cfg.get("smtTicker"):
         try:
             ag1 = yf_frame(cfg["smtTicker"], "1h", "730d", 60).tail(cfg.get("historyBarsH1", 4000))
-            ag5 = yf_frame(cfg["smtTicker"], "5m", "30d", 5).tail(cfg.get("historyBarsM5", 5000))
+            agc = conf_frames(cfg["smtTicker"], need, n_conf)
         except Exception as ex:
             core.log(f"تعذّر جلب الفضة (SMT معطّل في هذا التشغيل): {ex}")
-    ctx = Context(h1, m5, P, ag1, ag5)
+            ag1 = None; agc = {}
+    ctx = Context(h1, conf, P, ag1, agc)
     evs, _, _ = ctx.all_events()
-    return evs, m5.index[-1], P
+    last_t = max(df.index[-1] for df in conf.values()) if conf else h1.index[-1]
+    return evs, last_t, P
 
 
 def main():

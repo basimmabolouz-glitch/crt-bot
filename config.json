@@ -13,14 +13,38 @@
   "strategy": {
     "_note": "أي مفتاح هنا يغيّر الافتراضي (انظر DEFAULTS في crt_engine.py)",
     "crtTFs": [
-      "1H",
-      "2H",
+      "W",
+      "D",
       "4H",
-      "D"
+      "2H",
+      "1H"
     ],
-    "model": "Any",
-    "minScore": 7,
-    "requireKey": true,
+    "confMap": {
+      "W": [
+        240
+      ],
+      "D": [
+        60,
+        240
+      ],
+      "4H": [
+        15
+      ],
+      "2H": [
+        15,
+        5
+      ],
+      "1H": [
+        5,
+        3,
+        1
+      ]
+    },
+    "entryMode": "MSS+FVG after CISD",
+    "cisdMode": "last2",
+    "requireDailyBias": true,
+    "requirePOI": true,
+    "minScore": 8,
     "useRSI": true,
     "useSMT": true,
     "useKZ": true,

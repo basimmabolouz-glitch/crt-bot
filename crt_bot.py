@@ -17,7 +17,7 @@ CRT By Diaa — بوت تلجرام لإشارات الذهب.
 import json, os, sys, time, datetime as dt
 import requests
 import pandas as pd
-from crt_engine import Context, DEFAULTS
+from crt_engine import Context, DEFAULTS, MAX_SCORE, needed_conf, resample_min
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "config.json")
@@ -89,6 +89,10 @@ def fmt_ny(ts, add_min=0):
     return t.strftime("%Y-%m-%d %H:%M") + " (نيويورك)"
 
 
+def conf_name(m):
+    return {1: "1 دقيقة", 3: "3 دقائق", 5: "5 دقائق", 15: "15 دقيقة", 60: "الساعة", 240: "4 ساعات"}.get(m, f"{m}m")
+
+
 def lots_for(risk, cfg, contract):
     bal = cfg.get("_balance") or cfg["accountSize"]
     return (bal * cfg["riskPct"] / 100) / (risk * contract) if risk > 0 else 0
@@ -99,14 +103,19 @@ def message(ev, cfg, contract, P):
     if ev["kind"] == "setup":
         st = ev["setup"]
         side = "شراء" if st["isb"] else "بيع"
-        return (f"👀 إعداد CRT {side} على {ev['tf']} — {st['grade']} ({st['score']}/16)\n"
+        poi = "+".join(st["poi"]) if st["poi"] else "-"
+        bias_t = "صاعد" if st["bias"] == 1 else "هابط" if st["bias"] == -1 else "محايد"
+        return (f"👀 إعداد CRT {side} على {ev['tf']} — {st['grade']} ({st['score']}/{MAX_SCORE})\n"
                 f"الرينج: {st['L']:.2f} – {st['H']:.2f} | القمة/القاع المكسور: {st['ext']:.2f}\n"
-                f"مفتاحي: {'✔' if st['key'] else '✘'} | RSI تشبع: {'✔' if st['rsi'] else '✘'} | SMT فضة: {'✔' if st['smt'] else '✘'} — ننتظر تأكيد الدخول على 5 دقائق")
+                f"منطقة الاهتمام: {poi} | سيولة مفتاحية: {'✔' if st['key'] else '✘'} | التحيز اليومي: {bias_t}\n"
+                f"RSI تشبع: {'✔' if st['rsi'] else '✘'} | SMT فضة: {'✔' if st['smt'] else '✘'} — ننتظر CISD على {conf_name(ev['conf'])}")
     side = "🟢 <b>BUY</b>" if tr["dir"] == 1 else "🔴 <b>SELL</b>"
     if ev["kind"] == "signal":
         pct = P["tp1Pct"]
-        return (f"{side} {sym}  —  CRT {tr['tf']}  [{tr['tag']}]\n"
-                f"الدرجة: <b>{tr['grade']}</b> ({tr['score']}/16)\n"
+        poi = "+".join(tr["poi"]) if tr["poi"] else "-"
+        bias_t = "صاعد" if tr["bias"] == 1 else "هابط" if tr["bias"] == -1 else "محايد"
+        return (f"{side} {sym}  —  CRT {tr['tf']} ← تأكيد {conf_name(tr['conf'])}  [{tr['tag']}]\n"
+                f"الدرجة: <b>{tr['grade']}</b> ({tr['score']}/{MAX_SCORE})  |  منطقة الاهتمام: {poi}  |  التحيز اليومي: {bias_t}\n"
                 f"RSI تشبع: {'✔' if tr['rsi'] else '✘'}  |  SMT فضة: كسر السيولة {'✔' if tr['smt'] else '✘'} / عند الدخول {'✔' if tr['smt_ltf'] else '✘'}\n"
                 f"الدخول: <b>{tr['entry']:.2f}</b>\n"
                 f"الستوب: <b>{tr['sl0']:.2f}</b>  ({tr['risk']:.2f}$)\n"
@@ -115,7 +124,7 @@ def message(ev, cfg, contract, P):
                 f"المسافات من الدخول: ستوب {tr['risk']:.2f}$ | TP1 {abs(tr['tp1'] - tr['entry']):.2f}$ | TP2 {abs(tr['tp2'] - tr['entry']):.2f}$\n"
                 + (f"<i>{cfg['dataNote']}</i>\n" if cfg.get("dataNote") else "") +
                 f"اللوت المقترح: {lots_for(tr['risk'], cfg, contract):.2f}  (مخاطرة {cfg['riskPct']}%)\n"
-                f"🕒 {fmt_ny(ev['bar_time'], 5)}\n"
+                f"🕒 {fmt_ny(ev['bar_time'], ev['conf'])}\n"
                 f"<i>{NAME} — إشارة تعليمية وليست نصيحة استثمارية</i>")
     if ev["kind"] == "tp1":
         extra = f"وانقل الستوب إلى الدخول {tr['entry']:.2f}" if P["be"] else ""
@@ -178,27 +187,29 @@ def params(cfg):
     return P
 
 
+MT5_TF = {1: "TIMEFRAME_M1", 3: "TIMEFRAME_M3", 5: "TIMEFRAME_M5", 15: "TIMEFRAME_M15"}
+
+
 def compute(mt5, cfg):
     P = params(cfg); s = cfg["symbol"]
     off = server_utc_offset(mt5, s)
-    m5 = mt5_frame(mt5, s, mt5.TIMEFRAME_M5, cfg["historyBarsM5"], off)
+    need = sorted(m for m in needed_conf(P) if m in MT5_TF)
+    n_conf = cfg.get("historyBarsConf", 5000)
+    conf = {m: mt5_frame(mt5, s, getattr(mt5, MT5_TF[m]), n_conf, off) for m in need}
     h1 = mt5_frame(mt5, s, mt5.TIMEFRAME_H1, cfg["historyBarsH1"], off)
-    ag1 = None
+    ag1 = None; agc = {}
     if P.get("useSMT") and cfg.get("smtSymbol"):
         try:
             if mt5.symbol_select(cfg["smtSymbol"], True):
                 ag1 = mt5_frame(mt5, cfg["smtSymbol"], mt5.TIMEFRAME_H1, cfg["historyBarsH1"], off)
+                agc = {m: mt5_frame(mt5, cfg["smtSymbol"], getattr(mt5, MT5_TF[m]), n_conf, off) for m in need}
         except Exception as ex:
             log(f"تعذّر جلب الفضة (SMT معطّل): {ex}")
-    ag5 = None
-    if ag1 is not None:
-        try:
-            ag5 = mt5_frame(mt5, cfg["smtSymbol"], mt5.TIMEFRAME_M5, cfg["historyBarsM5"], off)
-        except Exception as ex:
-            log(f"تعذّر جلب فضة 5m: {ex}")
-    ctx = Context(h1, m5, P, ag1, ag5)
-    evs, open_trades, setups = ctx.all_events()
-    return evs, m5.index[-1], P
+            ag1 = None; agc = {}
+    ctx = Context(h1, conf, P, ag1, agc)
+    evs, _, _ = ctx.all_events()
+    last_t = max(df.index[-1] for df in conf.values()) if conf else h1.index[-1]
+    return evs, last_t, P
 
 
 # ───────────────────────── التشغيل ─────────────────────────
@@ -255,18 +266,19 @@ def main():
         P0 = params(cfg)
         tg.send(f"🤖 البوت بدأ العمل على {cfg['symbol']}\nالنظام: {NAME} — CRT على {'/'.join(P0['crtTFs'])} + دخول 5m ({P0['model']})")
     last_bar = None
+    trig = min([m for m in needed_conf(params(cfg)) if m in MT5_TF] or [5])
     while True:
         try:
             if not mt5.terminal_info():
                 log("انقطع الاتصال بـ MT5 — إعادة الاتصال")
                 mt5, contract = connect(cfg)
-            r = mt5.copy_rates_from_pos(cfg["symbol"], mt5.TIMEFRAME_M5, 1, 1)
+            r = mt5.copy_rates_from_pos(cfg["symbol"], getattr(mt5, MT5_TF[trig]), 1, 1)
             if r is not None and len(r):
                 bt = int(r[0]["time"])
                 if bt != last_bar:
                     last_bar = bt
                     events, last_t, P = compute(mt5, cfg)
-                    fresh = [e for e in events if e["bar_time"] == last_t and ev_key(e) not in sent
+                    fresh = [e for e in events if e["bar_time"] >= last_t - pd.Timedelta(minutes=cfg.get("freshMin", 30)) and ev_key(e) not in sent
                              and (e["kind"] != "setup" or cfg.get("notifySetups", False))]
                     for e in fresh:
                         txt = message(e, cfg, contract, P)
