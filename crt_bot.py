@@ -89,57 +89,7 @@ def fmt_ny(ts, add_min=0):
     return t.strftime("%Y-%m-%d %H:%M") + " (نيويورك)"
 
 
-def conf_name(m):
-    return {1: "1 دقيقة", 3: "3 دقائق", 5: "5 دقائق", 15: "15 دقيقة", 60: "الساعة", 240: "4 ساعات"}.get(m, f"{m}m")
-
-
-def lots_for(risk, cfg, contract):
-    bal = cfg.get("_balance") or cfg["accountSize"]
-    return (bal * cfg["riskPct"] / 100) / (risk * contract) if risk > 0 else 0
-
-
-def message(ev, cfg, contract, P):
-    tr = ev["trade"]; sym = cfg["symbol"]
-    if ev["kind"] == "setup":
-        st = ev["setup"]
-        side = "شراء" if st["isb"] else "بيع"
-        poi = "+".join(st["poi"]) if st["poi"] else "-"
-        bias_t = "صاعد" if st["bias"] == 1 else "هابط" if st["bias"] == -1 else "محايد"
-        return (f"👀 إعداد CRT {side} على {ev['tf']} — {st['grade']} ({st['score']}/{MAX_SCORE})\n"
-                f"الرينج: {st['L']:.2f} – {st['H']:.2f} | القمة/القاع المكسور: {st['ext']:.2f}\n"
-                f"منطقة الاهتمام: {poi} | سيولة مفتاحية: {'✔' if st['key'] else '✘'} | التحيز اليومي: {bias_t}\n"
-                f"RSI تشبع: {'✔' if st['rsi'] else '✘'} | SMT فضة: {'✔' if st['smt'] else '✘'} — ننتظر CISD على {conf_name(ev['conf'])}")
-    side = "🟢 <b>BUY</b>" if tr["dir"] == 1 else "🔴 <b>SELL</b>"
-    if ev["kind"] == "signal":
-        pct = P["tp1Pct"]
-        poi = "+".join(tr["poi"]) if tr["poi"] else "-"
-        bias_t = "صاعد" if tr["bias"] == 1 else "هابط" if tr["bias"] == -1 else "محايد"
-        return (f"{side} {sym}  —  CRT {tr['tf']} ← تأكيد {conf_name(tr['conf'])}  [{tr['tag']}]\n"
-                f"الدرجة: <b>{tr['grade']}</b> ({tr['score']}/{MAX_SCORE})  |  منطقة الاهتمام: {poi}  |  التحيز اليومي: {bias_t}\n"
-                f"RSI تشبع: {'✔' if tr['rsi'] else '✘'}  |  SMT فضة: كسر السيولة {'✔' if tr['smt'] else '✘'} / عند الدخول {'✔' if tr['smt_ltf'] else '✘'}\n"
-                f"الدخول: <b>{tr['entry']:.2f}</b>\n"
-                f"الستوب: <b>{tr['sl0']:.2f}</b>  ({tr['risk']:.2f}$)\n"
-                f"TP1: <b>{tr['tp1']:.2f}</b>  (1:{tr['rr1']:.2f}) — إغلاق {pct:g}% ثم الستوب للدخول\n"
-                f"TP2: <b>{tr['tp2']:.2f}</b>  (1:{tr['rr2']:.2f})\n"
-                f"المسافات من الدخول: ستوب {tr['risk']:.2f}$ | TP1 {abs(tr['tp1'] - tr['entry']):.2f}$ | TP2 {abs(tr['tp2'] - tr['entry']):.2f}$\n"
-                + (f"<i>{cfg['dataNote']}</i>\n" if cfg.get("dataNote") else "") +
-                f"اللوت المقترح: {lots_for(tr['risk'], cfg, contract):.2f}  (مخاطرة {cfg['riskPct']}%)\n"
-                f"🕒 {fmt_ny(ev['bar_time'], ev['conf'])}\n"
-                f"<i>{NAME} — إشارة تعليمية وليست نصيحة استثمارية</i>")
-    if ev["kind"] == "tp1":
-        extra = f"وانقل الستوب إلى الدخول {tr['entry']:.2f}" if P["be"] else ""
-        return f"🎯 {side} {sym} (CRT {tr['tf']}): تحقق TP1 {tr['tp1']:.2f} — أغلق {P['tp1Pct']:g}% {extra}"
-    if ev["kind"] == "closed":
-        icon = "✅" if ev["R"] > 0.001 else ("❌" if ev["R"] < -0.001 else "⚪")
-        return (f"{icon} {side} {sym} (CRT {tr['tf']}): أُغلقت الصفقة — {ev['result']} ({ev['R']:+.2f}R)\n"
-                f"الدخول {tr['entry']:.2f} | الستوب الأصلي {tr['sl0']:.2f} | TP2 {tr['tp2']:.2f}")
-    return None
-
-
-def ev_key(ev):
-    t = ev["trade"]["sig_time"] if ev.get("trade") else str(ev["bar_time"])
-    d = ev["trade"]["dir"] if ev.get("trade") else ev["setup"]["isb"]
-    return f"{ev['kind']}|{ev['tf']}|{t}|{d}|{ev['bar_time']}"
+from crt_messages import message, ev_key, fmt_ny, lots_for, conf_name   # noqa: E402
 
 
 # ───────────────────────── MT5 ─────────────────────────

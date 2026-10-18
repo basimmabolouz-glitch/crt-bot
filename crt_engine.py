@@ -419,6 +419,17 @@ class Context:
         def ev(kind, k, tr=None, **kw):
             events.append(dict(kind=kind, tf=name, conf=cm, bar_time=t5[k], k=k, trade=dict(tr) if tr else None, **kw))
 
+        def in_kz(T):
+            hm = T.hour * 60 + T.minute
+            return ((not P["useKZ"]) or (P["kzAsia"] and hm >= 1200) or (P["kzLondon"] and 120 <= hm < 300)
+                    or (P["kzNYAM"] and 420 <= hm < 600) or (P["kzNYPM"] and 780 <= hm < 960))
+
+        def cancel_pending(k, reason):
+            nonlocal pending
+            if pending is not None and pending.get("announced"):
+                ev("pending_cancel", k, setup_id=pending["sid"], pend=dict(pending), reason=reason)
+            pending = None
+
         for k in range(n):
             T = t5[k]
             j = k - LS
@@ -471,13 +482,17 @@ class Context:
                     ev("setup", k, setup=dict(setup), setup_id=sid)
                 else:
                     setup = None
-                pending = None; cisd_ok = False
+                cancel_pending(k, "إعداد جديد")
+                cisd_ok = False
             # 2) انتهاء / إبطال
             if setup is not None:
                 isb = setup["isb"]
                 mid = setup["L"] + (setup["H"] - setup["L"]) * (P["tp1Frac"] if isb else 1 - P["tp1Frac"])
                 if T > setup["end"] or (c5[k] < setup["ext"] if isb else c5[k] > setup["ext"]) or (h5[k] >= mid if isb else l5[k] <= mid):
-                    setup = None; pending = None; cisd_ok = False
+                    why_c = "انتهت مدة الإعداد" if T > setup["end"] else ("كُسر الوقف قبل التفعيل" if (c5[k] < setup["ext"] if isb else c5[k] > setup["ext"])
+                                                                         else "وصل السعر للهدف الأول بدون تفعيل الأمر")
+                    cancel_pending(k, why_c)
+                    setup = None; cisd_ok = False
             # 3) CISD ثم دخول
             if setup is not None and trade is None and k > 1:
                 isb = setup["isb"]
@@ -491,7 +506,7 @@ class Context:
                     mss = (not np.isnan(lpl)) and c5[k] < lpl and c5[k - 1] >= lpl
                 if cisd:
                     cisd_ok = True
-                epx = np.nan; tag = ""
+                epx = np.nan; tag = ""; fill_sl = np.nan
                 if mode == "CISD direct":
                     if cisd: epx, tag = c5[k], "CISD"
                 else:
@@ -502,24 +517,34 @@ class Context:
                             if isb and l5[k - q] > h5[k - q - 2]: ftop, fbot = l5[k - q], h5[k - q - 2]; break
                             if (not isb) and h5[k - q] < l5[k - q - 2]: ftop, fbot = l5[k - q - 2], h5[k - q]; break
                         if not np.isnan(ftop):
-                            pending = dict(px=(ftop + fbot) / 2, bar=k)
+                            ppx = (ftop + fbot) / 2
+                            psl = setup["ext"] - atr5[k] * P["slBufAtr"] if isb else setup["ext"] + atr5[k] * P["slBufAtr"]
+                            prisk = abs(ppx - psl)
+                            ptp1 = setup["L"] + (setup["H"] - setup["L"]) * (P["tp1Frac"] if isb else 1 - P["tp1Frac"])
+                            ptp2 = setup["H"] if isb else setup["L"]
+                            if in_kz(T) and prisk > mt and ((psl < ppx < ptp1) if isb else (ptp1 < ppx < psl)) and abs(ptp1 - ppx) / prisk >= P["minRR"]:
+                                pending = dict(px=float(ppx), bar=k, sl=float(psl), tp1=float(ptp1), tp2=float(ptp2), risk=float(prisk),
+                                               rr1=float(abs(ptp1 - ppx) / prisk), rr2=float(abs(ptp2 - ppx) / prisk), isb=isb,
+                                               grade=setup["grade"], score=setup["score"], poi=setup["poi"], bias=setup["bias"],
+                                               rsi=setup["rsi"], smt=setup["smt"], key=setup["key"], tf=name, conf=cm, sid=setup["sid"],
+                                               expire_min=P["limitExpiry"] * cm, announced=True)
+                                ev("pending", k, setup_id=setup["sid"], pend=dict(pending))
                     if pending is not None:
-                        if k - pending["bar"] > P["limitExpiry"]: pending = None
+                        if k - pending["bar"] > P["limitExpiry"]: cancel_pending(k, "انتهت مدة الأمر المعلق دون لمسه")
                         elif k > pending["bar"] and ((l5[k] <= pending["px"]) if isb else (h5[k] >= pending["px"])):
                             epx, tag = pending["px"], "CISD+MSS+FVG"
+                            fill_sl = pending["sl"]
                 if not np.isnan(epx):
                     pending = None
                     buf = atr5[k] * P["slBufAtr"]
-                    sl = setup["ext"] - buf if isb else setup["ext"] + buf
+                    sl = fill_sl if not np.isnan(fill_sl) else (setup["ext"] - buf if isb else setup["ext"] + buf)
                     risk = abs(epx - sl)
                     tp1 = setup["L"] + (setup["H"] - setup["L"]) * (P["tp1Frac"] if isb else 1 - P["tp1Frac"])
                     tp2 = setup["H"] if isb else setup["L"]
                     rr1 = abs(tp1 - epx) / risk if risk > 0 else 0
                     dir_ok = (sl < epx < tp1) if isb else (tp1 < epx < sl)
-                    hm = T.hour * 60 + T.minute
-                    kz = (not P["useKZ"]) or (P["kzAsia"] and hm >= 1200) or (P["kzLondon"] and 120 <= hm < 300) \
-                        or (P["kzNYAM"] and 420 <= hm < 600) or (P["kzNYPM"] and 780 <= hm < 960)
-                    if risk > mt and dir_ok and rr1 >= P["minRR"] and kz:
+                    kz = in_kz(T)
+                    if risk > mt and dir_ok and rr1 >= P["minRR"] and (kz or tag == "CISD+MSS+FVG"):
                         smt_ltf = bool(P["useSMT"] and self.smt_entry(isb, k, l5, h5, agL, agH))
                         tot = setup["score"] + (P["smtPts"] if smt_ltf else 0)
                         grade_t = "A+" if tot >= P["aPlus"] else ("A" if tot >= P["aPlus"] - 2 else "B")
@@ -574,24 +599,27 @@ class Context:
         return self.select_events(evs), open_trades, setups
 
     def select_events(self, evs):
-        """إشارة واحدة لكل إعداد (أبكر فريم تأكيد، وعند التعادل الأكبر)، وحدود يومية عامة."""
+        """لكل إعداد نختار فريم تأكيد واحداً: أبكر أمر معلق، وإلا أبكر إشارة. ثم حدود يومية عامة."""
         P = self.P
-        order = {"setup": 0, "signal": 1, "tp1": 2, "closed": 3}
+        order = {"setup": 0, "pending": 1, "signal": 2, "tp1": 3, "pending_cancel": 3, "closed": 4}
         evs = sorted(evs, key=lambda e: (e["bar_time"], order[e["kind"]], -e["conf"]))
-        winner = {}
+        chosen = {}
         for e in evs:
-            if e["kind"] == "signal" and e["setup_id"] not in winner:
-                winner[e["setup_id"]] = e["conf"]
-        out = []; seen_setup = set(); allowed = set(); day = None; trades_today = losses_today = 0
+            if e["kind"] in ("pending", "signal") and e["setup_id"] not in chosen:
+                chosen[e["setup_id"]] = e["conf"]
+        out = []; seen = set(); allowed = set(); day = None; trades_today = losses_today = 0
         for e in evs:
             d = (e["bar_time"].year, e["bar_time"].month, e["bar_time"].day)
             if d != day: day = d; trades_today = losses_today = 0
             sid = e["setup_id"]
             if e["kind"] == "setup":
-                if sid in seen_setup: continue
-                seen_setup.add(sid); out.append(e)
+                if sid in seen: continue
+                seen.add(sid); out.append(e)
+            elif chosen.get(sid) != e["conf"]:
+                continue
+            elif e["kind"] in ("pending", "pending_cancel"):
+                out.append(e)
             elif e["kind"] == "signal":
-                if winner.get(sid) != e["conf"]: continue
                 if trades_today >= P["maxTradesDay"] or losses_today >= P["maxLossesDay"]: continue
                 trades_today += 1; allowed.add((sid, e["conf"])); out.append(e)
             else:
