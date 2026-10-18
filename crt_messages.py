@@ -41,12 +41,19 @@ def _bias(b):
 
 
 def _why(x, tf, conf):
-    poi = " + ".join(x["poi"]) if x.get("poi") else "لا يوجد"
+    if x.get("poi"):
+        poi = " + ".join(x["poi"]) + (" + مستوى سيولة رئيسي" if x.get("key") else "")
+        poi_ok = True
+    elif x.get("key"):
+        poi = "مستوى سيولة رئيسي (قمة/قاع أمس أو الأسبوع أو سوينغ)"
+        poi_ok = True
+    else:
+        poi, poi_ok = "لا يوجد", False
     smt = bool(x.get("smt") or x.get("smt_ltf"))
     return ("🧠 <b>لماذا هذه الصفقة؟</b>\n"
             f"• نموذج CRT على فريم {tf_name(tf)}، والتأكيد من فريم {conf_name(conf)}\n"
             f"• التحيز اليومي: {_bias(x['bias'])}\n"
-            f"• سحب السيولة داخل منطقة اهتمام: {poi} {_yn(bool(x.get('poi')))}\n"
+            f"• سحب السيولة داخل منطقة اهتمام: {poi} {_yn(poi_ok)}\n"
             f"• SMT مع الفضة: {_yn(smt)}\n"
             f"• تشبع RSI: {_yn(x.get('rsi'))}\n"
             f"• قوة الإعداد: {x['grade']} ({x['score']} من {MAX_SCORE})")
@@ -65,7 +72,7 @@ def message(ev, cfg, contract, P):
     if k == "setup":
         st = ev["setup"]
         side = "شراء" if st["isb"] else "بيع"
-        poi = " + ".join(st["poi"]) if st["poi"] else "مستوى سيولة"
+        poi = " + ".join(st["poi"]) if st["poi"] else "مستوى سيولة رئيسي"
         return (f"👀 <b>إعداد قيد المراقبة — {side} {sym}</b>\n{LINE}\n"
                 f"نموذج CRT على فريم {tf_name(ev['tf'])} تحقق، وننتظر تأكيد CISD من فريم {conf_name(ev['conf'])}.\n"
                 f"منطقة الاهتمام: {poi}\n"

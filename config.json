@@ -1,6 +1,8 @@
 {
   "ticker": "GC=F",
   "smtTicker": "SI=F",
+  "oandaInstrument": "XAU_USD",
+  "oandaSmt": "XAG_USD",
   "symbol": "XAUUSD (GC=F)",
   "contractSize": 100,
   "historyBarsM5": 5000,
