@@ -71,10 +71,9 @@ def spot_quote(sym, ref):
         return None
 
 
-def calc_offset(state, sym, ticker):
+def calc_offset(state, sym, live):
     """offset = سعر الآجل الحي - سعر الفوري الآن، منعّم عبر التشغيلات، ويُحدَّث فقط والسوق نشط."""
     old = state.get("off")
-    live = LIVE.get(ticker)
     q = spot_quote(sym, live) if live else None
     if q is None:
         return old                                   # قد يكون None إن لم يُقَس الفرق بعد (السوق مغلق)
@@ -84,6 +83,55 @@ def calc_offset(state, sym, ticker):
     new = raw if old is None else 0.7 * old + 0.3 * raw
     log(f"تصحيح: آجل {live:.2f} - فوري {q:.2f} = {raw:.2f}$ (المعتمد {new:.2f}$)")
     return new
+
+
+def realtime_5m(now):
+    """شموع 5 دقائق مكتملة لحظياً من الذهب الرقمي PAXG (Kraken ثم OKX). Yahoo متأخر نحو 10–15 دقيقة، وهذا بلا تأخير."""
+    try:
+        r = requests.get("https://api.kraken.com/0/public/OHLC", params={"pair": "PAXGUSD", "interval": 5}, timeout=15).json()
+        rows = list(r["result"].values())[0]
+        out = [dict(time=int(x[0]), open=float(x[1]), high=float(x[2]), low=float(x[3]), close=float(x[4])) for x in rows]
+        out = [b for b in out if b["time"] + 300 <= now]
+        if len(out) > 100:
+            return out, "Kraken"
+    except Exception as ex:
+        log(f"Kraken فشل: {ex}")
+    try:
+        r = requests.get("https://www.okx.com/api/v5/market/candles", params={"instId": "PAXG-USDT", "bar": "5m", "limit": 300}, timeout=15).json()
+        out = sorted((dict(time=int(x[0]) // 1000, open=float(x[1]), high=float(x[2]), low=float(x[3]), close=float(x[4])) for x in r["data"] if x[8] == "1"),
+                     key=lambda b: b["time"])
+        if len(out) > 100:
+            return out, "OKX"
+    except Exception as ex:
+        log(f"OKX فشل: {ex}")
+    return None, None
+
+
+def merge_realtime(yb, rt, now):
+    """يلصق شموع اللحظي بعد آخر شمعة موثوقة من Yahoo (تُحذف آخر 20 دقيقة منه لأنها قد تكون ناقصة) بعد مواءمة المستوى."""
+    yb = [b for b in yb if b["time"] + 300 <= now - 1200]
+    if not rt or not yb or now - (yb[-1]["time"] + 300) > 3600:         # لا بيانات Yahoo حديثة = السوق مغلق
+        return yb, None
+    rtd = {b["time"]: b for b in rt}
+    diffs = sorted(b["close"] - rtd[b["time"]]["close"] for b in yb[-48:] if b["time"] in rtd)
+    if len(diffs) < 2:
+        return yb, None
+    s = diffs[len(diffs) // 2]
+    new = [dict(b, open=b["open"] + s, high=b["high"] + s, low=b["low"] + s, close=b["close"] + s) for b in rt if b["time"] > yb[-1]["time"]]
+    return yb + new, s
+
+
+def resample(bars, minutes):
+    """يجمّع شموع 5 دقائق إلى فريم أكبر (مجموعات مكتملة فقط)."""
+    sec = minutes * 60; n = sec // 300; groups = {}
+    for b in bars:
+        groups.setdefault(b["time"] // sec * sec, []).append(b)
+    out = []
+    for t in sorted(groups):
+        g = groups[t]
+        if len(g) == n:
+            out.append(dict(time=t, open=g[0]["open"], high=max(x["high"] for x in g), low=min(x["low"] for x in g), close=g[-1]["close"]))
+    return out
 
 
 def shift(bars, off):
@@ -101,16 +149,31 @@ def params(cfg):
 
 def compute(cfg, state):
     P = params(cfg)
+    now = time.time()
     chart = yf_candles(cfg["ticker"], "5m", "30d", P["chartTF"])
-    main = yf_candles(cfg["ticker"], "15m", "30d", P["mainTF"])
+    live, src = LIVE.get(cfg["ticker"]), "Yahoo"
+    if P["chartTF"] == 5 and P["mainTF"] == 15:
+        rt, name = realtime_5m(now)
+        merged, s = merge_realtime(chart, rt, now)
+        if s is not None:
+            chart = merged; src = f"{name} لحظي"
+            live = chart[-1]["close"]
+            main = resample(chart, 15)
+            log(f"مصدر الأسعار: Yahoo (تاريخ) + {name} (لحظي) | آخر شمعة مغلقة قبل {(now - chart[-1]['time'] - 300) / 60:.1f} دقيقة | مواءمة {s:+.2f}$")
+        else:
+            main = yf_candles(cfg["ticker"], "15m", "30d", P["mainTF"])
+            log("تعذّر الدمج اللحظي (السوق مغلق أو المصدر غير متاح): نعتمد Yahoo المتأخر")
+    else:
+        main = yf_candles(cfg["ticker"], "15m", "30d", P["mainTF"])
     if cfg.get("spotCorrection", True):
-        off = calc_offset(state, cfg.get("spotSym", "XAU"), cfg["ticker"])
+        fresh = src != "Yahoo" or (now - (chart[-1]["time"] + 300)) <= 1500
+        off = calc_offset(state, cfg.get("spotSym", "XAU"), live) if fresh else state.get("off")
         if off is not None:
             state["off"] = off
             chart, main = shift(chart, off), shift(main, off)
-            cfg["dataNote"] = f"الأسعار من Yahoo مصحّحة بفرق الذهب الفوري ({off:.1f}$) فتقارب شارتك بفرق صغير: اعتمد على المسافات."
+            cfg["dataNote"] = f"الأسعار ({src}) مصحّحة بفرق الذهب الفوري ({off:.1f}$) فتقارب شارتك بفرق صغير: اعتمد على المسافات."
         else:
-            cfg["dataNote"] = "الأسعار من عقود Yahoo الآجلة بلا تصحيح الآن (السوق مغلق)، وقد تزيد 15–28$ عن شارتك: اعتمد على المسافات."
+            cfg["dataNote"] = "الأسعار بلا تصحيح الآن (السوق مغلق)، وقد تزيد 15–28$ عن شارتك: اعتمد على المسافات."
     return run_engine(chart, main, P), chart[-1]["time"], P
 
 
