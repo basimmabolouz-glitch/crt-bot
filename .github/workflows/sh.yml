@@ -30,7 +30,7 @@ jobs:
   run:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 355
     concurrency:
       group: sh-bot
       cancel-in-progress: false
@@ -50,7 +50,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONIOENCODING: utf-8
-        run: python sh_actions.py --loop 28
+        run: python sh_actions.py --loop 340
 
       - name: Save state
         if: always()
