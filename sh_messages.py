@@ -21,6 +21,13 @@ def lots_for(risk, cfg):
     return (cfg["accountSize"] * cfg["riskPct"] / 100) / (risk * cfg.get("ozPerLot", 100)) if risk > 0 else 0
 
 
+def prio(tr):
+    """طوكيو هي الأفضلية (أقوى نتيجة في الاختبار الطويل)، وغيرها ثانوية."""
+    if tr.get("sess") == "tokyo":
+        return "⭐ <b>أولوية — جلسة طوكيو</b> (أقوى جلسة إحصائياً)\n"
+    return "⚪ <i>ثانوية — " + SESS.get(tr.get("sess", ""), "") + " (أضعف إحصائياً من طوكيو، ادخلها بحذر أو بحجم أقل)</i>\n"
+
+
 def message(ev, cfg, P):
     tr = ev["trade"]; k = ev["kind"]
     side = "شراء" if tr["dir"] == 1 else "بيع"
@@ -30,11 +37,12 @@ def message(ev, cfg, P):
     star = " ★ قوي" if tr.get("lvlStrong") else ""
     note = f"<i>{cfg['dataNote']}</i>\n" if cfg.get("dataNote") else ""
 
+    pr = prio(tr)
     if k == "signal" and tr.get("pending"):
         order = "Buy Limit" if tr["dir"] == 1 else "Sell Limit"
         usePart = tr["usePart"]
         t1 = (f"🎯 الهدف الأول ({tr['tp1R']:g}R): <b>{tr['tp1']:.2f}</b> — أغلق {tr['tp1Pct']:g}% وحرّك الوقف للدخول\n") if usePart else ""
-        return (f"{BANNER}\n⏳ <b>جهّز أمراً معلقاً</b> (الكسر بعيد عن المستوى)\n"
+        return (f"{BANNER}\n⏳ <b>جهّز أمراً معلقاً</b> (الكسر بعيد عن المستوى)\n{pr}"
                 f"{icon} <b>{side} الذهب ({order})</b>\n{LINE}\n"
                 f"📍 سعر الدخول (عند المستوى): <b>{tr['entry']:.2f}</b>\n"
                 f"🛑 وقف الخسارة: <b>{tr['sl0']:.2f}</b>  (خسارة {tr['risk']:.2f}$)\n"
@@ -58,7 +66,7 @@ def message(ev, cfg, P):
         usePart = tr["usePart"]
         t1 = (f"🎯 الهدف الأول ({tr['tp1R']:g}R): <b>{tr['tp1']:.2f}</b>  (ربح {abs(tr['tp1'] - tr['entry']):.2f}$) — "
               f"أغلق {tr['tp1Pct']:g}% وحرّك الوقف إلى الدخول\n") if usePart else ""
-        return (f"{BANNER}\n🔔 <b>ادخل الآن بسعر السوق</b>\n{icon} <b>{side} الذهب</b>\n{LINE}\n"
+        return (f"{BANNER}\n🔔 <b>ادخل الآن بسعر السوق</b>\n{pr}{icon} <b>{side} الذهب</b>\n{LINE}\n"
                 f"📍 سعر الدخول: <b>{tr['entry']:.2f}</b>\n"
                 f"🛑 وقف الخسارة: <b>{tr['sl0']:.2f}</b>  (خسارة {tr['risk']:.2f}$)\n"
                 f"{t1}"
