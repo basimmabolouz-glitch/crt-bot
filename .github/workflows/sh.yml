@@ -4,13 +4,19 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      test:
+        description: "إرسال رسالة تجربة إلى تلجرام"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   test:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.test
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -28,7 +34,6 @@ jobs:
         run: python sh_actions.py --test
 
   run:
-    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 355
     concurrency:
@@ -44,6 +49,12 @@ jobs:
 
       - name: Install
         run: pip install -r requirements.txt
+
+      # يشغّل التشغيل التالي مسبقاً (ينتظر في الطابور حتى ينتهي هذا) فلا يتوقف البوت لو أخّر GitHub الجدولة
+      - name: Queue next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run sh.yml --repo "${{ github.repository }}" -f test=false || true
 
       - name: Run SH bot
         env:
