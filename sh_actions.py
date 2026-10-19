@@ -62,6 +62,22 @@ def yf_candles(ticker, interval, period, minutes):
     raise RuntimeError(f"فشل جلب {ticker} {interval}: {last}")
 
 
+def commit_state():
+    """داخل GitHub Actions: يحفظ الحالة فوراً بعد كل إرسال حتى لا تتكرر الرسائل لو انقطع التشغيل."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    try:
+        import subprocess
+        run = lambda *a: subprocess.run(a, cwd=HERE, capture_output=True, text=True, timeout=60)
+        run("git", "config", "user.name", "sh-bot"); run("git", "config", "user.email", "sh-bot@users.noreply.github.com")
+        run("git", "add", "sh_state.json")
+        if run("git", "diff", "--cached", "--quiet").returncode != 0:
+            run("git", "commit", "-m", "sh state")
+            run("git", "pull", "--rebase", "-q"); run("git", "push")
+    except Exception as ex:
+        log(f"تعذّر حفظ الحالة: {ex}")
+
+
 def spot_quote(sym, ref):
     try:
         r = requests.get(SPOT_URL.format(sym), timeout=12, headers={"User-Agent": "Mozilla/5.0"})
@@ -216,6 +232,8 @@ def main():
                     sent.add(ev_key(e))
             state["sent"] = list(sent)
             save_state(state)
+            if fresh:
+                commit_state()
         except Exception as ex:
             log(f"خطأ: {ex}")
         if time.time() + 60 >= deadline:
