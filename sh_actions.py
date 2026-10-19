@@ -116,13 +116,16 @@ def compute(cfg, state):
 
 def main():
     cfg = json.load(open(os.path.join(HERE, "sh_config.json"), encoding="utf-8"))
-    cfg["telegramToken"] = os.environ.get("TELEGRAM_TOKEN", cfg.get("telegramToken", ""))
-    cfg["chatId"] = os.environ.get("TELEGRAM_CHAT_ID", cfg.get("chatId", ""))
+    cfg["telegramToken"] = (os.environ.get("TELEGRAM_TOKEN") or cfg.get("telegramToken", "")).strip()
+    cfg["chatId"] = str(os.environ.get("TELEGRAM_CHAT_ID") or cfg.get("chatId", "")).strip()
     args = sys.argv[1:]
     tg = core.Telegram(cfg["telegramToken"], cfg["chatId"])
     if "--test" in args:
-        print("Telegram:", "OK" if tg.send(f"🟦 {NAME} (GitHub): الاتصال بتلجرام يعمل.") else "فشل")
-        return
+        t = cfg["telegramToken"]
+        log(f"فحص الإعدادات: طول التوكن {len(t)} (المتوقع 46) | معرّف المحادثة: {cfg['chatId']!r}")
+        ok = tg.send(f"🟦 {NAME} (GitHub): الاتصال بتلجرام يعمل.")
+        print("Telegram:", "OK" if ok else "فشل")
+        sys.exit(0 if ok else 1)                    # تظهر الخطوة حمراء في GitHub عند الفشل
     state = load_state()
     if "--history" in args:
         evs, last_t, P = compute(cfg, state)

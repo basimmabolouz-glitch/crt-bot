@@ -56,6 +56,7 @@ def save_state(st):
 class Telegram:
     def __init__(self, token, chat_id):
         self.base = f"https://api.telegram.org/bot{token}"
+        self.token = token
         self.chat_id = chat_id
 
     def send(self, text):
@@ -66,9 +67,9 @@ class Telegram:
                                         "disable_web_page_preview": "true"}, timeout=15)
                 if r.ok:
                     return True
-                log(f"Telegram error {r.status_code}: {r.text[:200]}")
+                log(f"Telegram error {r.status_code}: {r.text[:200]}".replace(self.token, "***") if self.token else "Telegram error")
             except Exception as e:
-                log(f"Telegram exception: {e}")
+                log(f"Telegram exception: {e}".replace(self.token, "***") if self.token else "Telegram exception")
             time.sleep(2 * (attempt + 1))
         return False
 
