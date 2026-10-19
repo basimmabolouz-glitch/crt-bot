@@ -20,6 +20,7 @@ import crt_bot as core                      # Telegram فقط
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(HERE, "sh_state.json")
 SPOT_URL = "https://api.gold-api.com/price/{}"
+LIVE = {}                                   # آخر سعر حي (شمعة غير مكتملة) لكل رمز
 
 
 def log(msg):
@@ -47,6 +48,7 @@ def yf_candles(ticker, interval, period, minutes):
             d = d[["Open", "High", "Low", "Close"]].dropna()
             if len(d) < 200:
                 raise RuntimeError(f"بيانات قليلة لـ {ticker} {interval}: {len(d)}")
+            LIVE[ticker] = float(d.Close.values[-1])
             ts = ((d.index.tz_convert("UTC") - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta(seconds=1)).tolist()   # آمن مع أي وحدة زمنية لـ pandas
             now = time.time()
             out = []
@@ -69,16 +71,18 @@ def spot_quote(sym, ref):
         return None
 
 
-def calc_offset(state, sym, last_bar):
-    """offset = سعر الآجل - سعر الفوري، منعّم عبر التشغيلات، ويُحدَّث فقط والسوق نشط."""
+def calc_offset(state, sym, ticker):
+    """offset = سعر الآجل الحي - سعر الفوري الآن، منعّم عبر التشغيلات، ويُحدَّث فقط والسوق نشط."""
     old = state.get("off")
-    age_min = (time.time() - (last_bar["time"] + 300)) / 60.0
-    q = spot_quote(sym, last_bar["close"]) if (age_min <= 5.0 or os.environ.get("FORCE_OFFSET") == "1") else None
+    live = LIVE.get(ticker)
+    q = spot_quote(sym, live) if live else None
     if q is None:
         return old                                   # قد يكون None إن لم يُقَس الفرق بعد (السوق مغلق)
-    raw = last_bar["close"] - q
+    raw = live - q
+    if abs(raw) > 60:                                # قراءة شاذة
+        return old
     new = raw if old is None else 0.7 * old + 0.3 * raw
-    log(f"تصحيح: آجل {last_bar['close']:.2f} - فوري {q:.2f} = {raw:.2f}$ (المعتمد {new:.2f}$)")
+    log(f"تصحيح: آجل {live:.2f} - فوري {q:.2f} = {raw:.2f}$ (المعتمد {new:.2f}$)")
     return new
 
 
@@ -100,7 +104,7 @@ def compute(cfg, state):
     chart = yf_candles(cfg["ticker"], "5m", "30d", P["chartTF"])
     main = yf_candles(cfg["ticker"], "15m", "30d", P["mainTF"])
     if cfg.get("spotCorrection", True):
-        off = calc_offset(state, cfg.get("spotSym", "XAU"), chart[-1])
+        off = calc_offset(state, cfg.get("spotSym", "XAU"), cfg["ticker"])
         if off is not None:
             state["off"] = off
             chart, main = shift(chart, off), shift(main, off)
@@ -120,8 +124,8 @@ def main():
         print("Telegram:", "OK" if tg.send(f"🟦 {NAME} (GitHub): الاتصال بتلجرام يعمل.") else "فشل")
         return
     state = load_state()
-    evs, last_t, P = compute(cfg, state)
     if "--history" in args:
+        evs, last_t, P = compute(cfg, state)
         k = args.index("--history")
         days = int(args[k + 1]) if len(args) > k + 1 else 3
         for e in evs:
@@ -129,17 +133,28 @@ def main():
                 print("─" * 40)
                 print(message(e, cfg, P).replace("<b>", "").replace("</b>", "").replace("<i>", "").replace("</i>", ""))
         return
+    # GitHub يؤخر الجدولة أحياناً 25–40 دقيقة، فكل تشغيل يفحص كل دقيقة لمدة --loop دقيقة ليغطي الفجوات
+    loop_min = float(args[args.index("--loop") + 1]) if "--loop" in args else 0
+    deadline = time.time() + loop_min * 60
     sent = set(state["sent"])
-    max_age = cfg.get("maxAgeMin", 45) * 60
-    fresh = [e for e in evs if e["bar_time"] >= time.time() - max_age and ev_key(e) not in sent]
-    log(f"{NAME} | آخر شمعة مغلقة: {dt.datetime.fromtimestamp(last_t, dt.timezone.utc):%Y-%m-%d %H:%M} UTC | أحداث جديدة: {len(fresh)}")
-    for e in fresh:
-        txt = message(e, cfg, P)
-        if txt and tg.send(txt):
-            log(f"أُرسل: {e['kind']} {ev_key(e)}")
-            sent.add(ev_key(e))
-    state["sent"] = list(sent)
-    save_state(state)
+    max_age = cfg.get("maxAgeMin", 60) * 60
+    while True:
+        try:
+            evs, last_t, P = compute(cfg, state)
+            fresh = [e for e in evs if e["bar_time"] >= time.time() - max_age and ev_key(e) not in sent]
+            log(f"{NAME} | آخر شمعة مغلقة: {dt.datetime.fromtimestamp(last_t, dt.timezone.utc):%Y-%m-%d %H:%M} UTC | أحداث جديدة: {len(fresh)}")
+            for e in fresh:
+                txt = message(e, cfg, P)
+                if txt and tg.send(txt):
+                    log(f"أُرسل: {e['kind']} {ev_key(e)}")
+                    sent.add(ev_key(e))
+            state["sent"] = list(sent)
+            save_state(state)
+        except Exception as ex:
+            log(f"خطأ: {ex}")
+        if time.time() + 60 >= deadline:
+            break
+        time.sleep(60)
 
 
 if __name__ == "__main__":

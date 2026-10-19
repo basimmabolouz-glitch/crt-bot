@@ -22,7 +22,7 @@ NY = ZoneInfo("America/New_York")
 
 DEFAULTS = dict(
     chartTF=5, mainTF=15, pvL=3, pvR=2, depthATR=1.0, clusterTol=0.3, usePsych=True, maxActive=30,
-    trigMode="both", onlyStrong=False, strictBreak=True, useBody=True, bodyMin=0.6, farATR=1.0,
+    trigMode="both", onlyStrong=False, mainOrStrong=False, strictBreak=True, useBody=True, bodyMin=0.6, farATR=1.0,
     farMode="limit", retestBars=6,
     useRsiMax=True, rsiLen=14, rsiMax=70,
     bufPips=10, pipSize=0.1, minSLatr=1.0, maxSLatr=0,
@@ -31,7 +31,7 @@ DEFAULTS = dict(
     sessions={"tokyo": {"on": True, "range": "0900-1100", "tz": "Asia/Tokyo"},
               "london": {"on": True, "range": "0800-1000", "tz": "Europe/London"},
               "newyork": {"on": True, "range": "0700-1100", "tz": "America/New_York"}},
-    maxTrades=3, stopAfterWins=3, useNews=True, newsDates=[], newsTz="Asia/Riyadh",
+    maxTrades=3, stopAfterWins=3, useNews=True, newsDates=[], newsTz="Asia/Hebron",
     useDayMom=True, useNoJudas=False, asiaEndMin=300, useADR=False, adrLen=10, useNoFVG=True,
     secondBreak="none", secondBars=24, zoneATR=0.5, zoneBars=12,
 )
@@ -238,7 +238,7 @@ def run_engine(chart, main, P):
             if up or dn:
                 tm = P["trigMode"]
                 tfOK = tm == "both" or (tm == "sub" and not lv["isMain"]) or (tm == "main" and lv["isMain"])
-                if tfOK and ((not P["onlyStrong"]) or lv["strong"]):
+                if tfOK and ((not P["onlyStrong"]) or lv["strong"]) and ((not P["mainOrStrong"]) or lv["isMain"] or lv["strong"]):
                     if up and C[i - 1] <= ref and (isnan(brkHi) or lv["lvl"] > brkHi):
                         brkHi = lv["lvl"]; infoHi = lv
                     if dn and C[i - 1] >= ref and (isnan(brkLo) or lv["lvl"] < brkLo):

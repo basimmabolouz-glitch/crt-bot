@@ -2,11 +2,11 @@
   "ticker": "GC=F",
   "spotSym": "XAU",
   "spotCorrection": true,
-  "displayTz": "Asia/Riyadh",
+  "displayTz": "Asia/Hebron",
   "accountSize": 10000,
   "riskPct": 0.5,
   "ozPerLot": 100,
-  "maxAgeMin": 45,
+  "maxAgeMin": 60,
   "strategy": {
     "chartTF": 5,
     "mainTF": 15,

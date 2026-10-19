@@ -14,7 +14,7 @@ RESULT_WHY = {"TP2": "وصلت الهدف الثاني", "TP": "وصلت اله�
 
 def fmt_time(epoch, tz, add_min=0):
     t = dt.datetime.fromtimestamp(epoch + add_min * 60, dt.timezone.utc).astimezone(ZoneInfo(tz))
-    return t.strftime("%Y-%m-%d %H:%M") + f" ({'توقيت الرياض' if tz == 'Asia/Riyadh' else tz})"
+    return t.strftime("%Y-%m-%d %H:%M") + f" ({'توقيت فلسطين' if tz == 'Asia/Hebron' else tz})"
 
 
 def lots_for(risk, cfg):
@@ -25,7 +25,7 @@ def message(ev, cfg, P):
     tr = ev["trade"]; k = ev["kind"]
     side = "شراء" if tr["dir"] == 1 else "بيع"
     icon = "🟢" if tr["dir"] == 1 else "🔴"
-    tz = cfg.get("displayTz", "Asia/Riyadh")
+    tz = cfg.get("displayTz", "Asia/Hebron")
     tfm = P["mainTF"] if tr.get("lvlMain") else P["chartTF"]
     star = " ★ قوي" if tr.get("lvlStrong") else ""
     note = f"<i>{cfg['dataNote']}</i>\n" if cfg.get("dataNote") else ""
