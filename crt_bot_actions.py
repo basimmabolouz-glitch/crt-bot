@@ -206,7 +206,7 @@ def compute(cfg):
 def main():
     cfg = json.load(open(os.path.join(HERE, "config.json"), encoding="utf-8"))
     cfg["telegramToken"] = (os.environ.get("TELEGRAM_TOKEN") or cfg.get("telegramToken", "")).strip()
-    cfg["chatId"] = str(os.environ.get("TELEGRAM_CHAT_ID") or cfg.get("chatId", "")).strip()
+    cfg["chatId"] = str(cfg.get("chatId") or os.environ.get("TELEGRAM_CHAT_ID") or "").strip()   # معرّف المحادثة (ليس سرّاً) من ملف الإعدادات أولاً
     args = sys.argv[1:]
     tg = core.Telegram(cfg["telegramToken"], cfg["chatId"])
     contract = cfg.get("contractSize", 100.0)
