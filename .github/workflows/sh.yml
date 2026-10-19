@@ -27,6 +27,14 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt
 
+      - name: Telegram test (manual run only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING: utf-8
+        run: python sh_actions.py --test
+
       - name: Run SH bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
